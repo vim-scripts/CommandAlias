@@ -20,27 +20,7 @@ if !exists("s:idx")
     let s:idx = 0
 endif
 
-if !exists('CRDispatcher')
-    let g:CRDispatcher = {}
-    fun g:CRDispatcher.dispatch() dict
-	let cmdtype = getcmdtype()
-	if cmdtype == ':'
-	   if has_key(self, 'expr')
-	       return self.expr()
-	   endif
-	elseif cmdtype == '/'
-	    if has_key(self, 'search')
-		return self.search()
-	    endif
-	endif
-	return getcmdline()
-    endfun
-endif
-if !exists('*CRDispatch')
-    fun CRDispatch()
-	return g:CRDispatcher.dispatch()
-    endfun
-endif
+let s:AliasToggle = 1
 
 let s:system = !empty(globpath(&rtp, 'plugin/system.vim'))
 fun! ParseRange(cmdline) " {{{
@@ -106,62 +86,50 @@ fun! ParseRange(cmdline) " {{{
     " If a:cmdline == '1000' we return here:
     return [ '', a:cmdline, 2]
 endfun " }}}
-fun! CRDispatcher.expr() dict " {{{
-    let cmdlines = split(getcmdline(), '\\\@<!|')
-    let scmdlines = copy(cmdlines)
-
-    let n_cmdlines = []
-    for cmdline in cmdlines
-	if s:system && cmdline[0:1] == "! "
-	    if !exists("*WrapCmdLine")
-		echoe 'You need to update system.vim plugin to version 3'
-		break
-	    else
-		let cmdline = WrapCmdLine()
-	    endif
-	    call add(n_cmdlines, cmdline)
-	    let alias = "! " " This is for debuging
-	    let cmd = "!"
-	    continue
+fun! ReWriteCmdLine(dispatcher) " {{{
+    " a:dispatcher: is crdispatcher#CRDispatcher dict
+    if a:dispatcher.cmdtype !=# ':' || !s:AliasToggle
+	return
+    endif
+    let cmdline = a:dispatcher.cmdline
+    let decorator = matchstr(cmdline, '^\s*\(sil\%[ent]!\=\s*\|debug\s*\|\d*verb\%[ose]\s*\)*')
+    let cmdline = cmdline[len(decorator):]
+    let test=0
+    let [range, cmdline, error] = ParseRange(cmdline)
+    for alias in sort(values(s:aliases), "<SID>CompareLA")
+	let match = matchstr(cmdline, '\C^\%(\s\|:\)*'.alias['alias'].(alias['match_end'] ? '\ze\%($\|[^[:alpha:]]\)' : ''))
+	if match != '' && 
+		    \ (index(alias['buflocal'], 0) != -1 || index(alias['buflocal'],  bufnr('%')) != -1)
+	    let test=1
+	    break
 	endif
-	" XXX: detect verbose, silent and debug keywords.
-	let decorator = matchstr(cmdline, '^\s*\(sil\%[ent]!\=\s*\|debug\s*\|\d*verb\%[ose]\s*\)*')
-	let cmdline = cmdline[len(decorator):]
-	let test=0
-	let [range, cmdline, error] = ParseRange(cmdline)
-	for alias in sort(values(s:aliases), "<SID>CompareLA")
-	    let match = matchstr(cmdline, '\C^\%(\s\|:\)*'.alias['alias'].(alias['match_end'] ? '\ze\%($\|[^[:alpha:]]\)' : ''))
-	    if match != '' && 
-			\ (index(alias['buflocal'], 0) != -1 || index(alias['buflocal'],  bufnr('%')) != -1)
-		let test=1
-		break
-	    endif
-	endfor
-	if test
-	    let cmd = alias['cmd'].cmdline[len(match):]
-	    " Default: if empty(range) use alias range otherwise use range:
-	    if empty(range)
-		let range = alias['default_range']
-	    endif
-	    if alias['cmd'][0] != '!' && get(alias, 'history', 0)
-		call histadd(":", getcmdline())
-		let cmd .= "|call histdel(':', -1)"
-	    endif
-	else
-	    let cmd = cmdline
-	endif
-	call add(n_cmdlines, decorator.range.cmd)
     endfor
-    let cmdline = join(n_cmdlines, "|")
+    if test
+	let cmd = alias['cmd'].cmdline[len(match):]
+	" Default: if empty(range) use alias range otherwise use range:
+	if empty(range)
+	    let range = alias['default_range']
+	endif
+	if alias['cmd'][0] != '!' && get(alias, 'history', 0)
+	    call histadd(":", getcmdline())
+	    let cmd .= "|call histdel(':', -1)"
+	endif
+    else
+	let cmd = cmdline
+    endif
+    let a:dispatcher.cmdline = decorator . range . cmd
     if cmdline !~ 'cmd_alias_debug' && exists("g:cmd_alias_debug")
 	call add(g:cmd_alias_debug, { 'cmdline' : cmdline, 'alias' : alias, 'cmd' : cmd, 'scmdlines' : scmdlines})
     endif
-    return cmdline
 endfunc "}}}
-cno <C-M> <CR>
-if empty(maparg('<Plug>CRDispatch', 'c'))
-    cno <Plug>CRDispatch <C-\>eCRDispatch()<CR><CR>
-endif
+try
+    call add(crdispatcher#CRDispatcher['callbacks'], function('ReWriteCmdLine'))
+catch /E121:/
+    echohl ErrorMsg
+    echom 'CommandAlias Plugin: please install "https://github.com/coot/CRDispatcher".'
+    echohl Normal
+    finish
+endtry
 
 fun! <SID>Compare(i1,i2) "{{{
    return (a:i1['alias'] == a:i2['alias'] ? 0 : a:i1['alias'] > a:i2['alias'] ? 1 : -1)
@@ -249,13 +217,7 @@ fun! <SID>CompleteAliases(A,B,C) " {{{
 endfun " }}}
 com! -bang -nargs=* -complete=custom,<SID>CompleteAliases CmdAlias :call <SID>RegAlias(<q-bang>,<f-args>)
 fun! <SID>AliasToggle() " {{{
-    if !empty(maparg('<CR>', 'c'))
-	echo 'cmdalias: off'
-	cunmap <CR>
-    else
-	echo 'cmdalias: on'
-	cnoremap <silent> <CR> <C-\>eCRDispatch()<CR><CR>
-    endif
+    let s:AliasToggle = !s:AliasToggle
 endfun " }}}
 com! -nargs=0 CmdAliasToggle :call <SID>AliasToggle()
 nnoremap <F12> :CmdAliasToggle<CR>
